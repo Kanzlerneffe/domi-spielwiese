@@ -5,6 +5,10 @@ on:
     - cron: '*/15 * * * *'  # Läuft alle 15 Minuten
   workflow_dispatch:  # Ermöglicht manuelle Ausführung
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   check-museum-slots:
     runs-on: ubuntu-latest
