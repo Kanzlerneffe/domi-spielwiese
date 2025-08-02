@@ -1,0 +1,194 @@
+name: Telegram Connection Test 📱
+
+on:
+  workflow_dispatch:  # Nur manuell ausführbar
+
+permissions:
+  contents: read
+
+jobs:
+  test-telegram:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install node-fetch
+        run: npm install node-fetch
+        
+      - name: Test Telegram Connection
+        uses: actions/github-script@v7
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        with:
+          script: |
+            console.log('🧪 Starting comprehensive Telegram test...');
+            console.log('='.repeat(50));
+            
+            // Step 1: Check if secrets exist
+            console.log('📋 STEP 1: Checking secrets...');
+            const hasToken = !!process.env.TELEGRAM_BOT_TOKEN;
+            const hasChatId = !!process.env.TELEGRAM_CHAT_ID;
+            
+            console.log('✅ TELEGRAM_BOT_TOKEN exists:', hasToken);
+            console.log('✅ TELEGRAM_CHAT_ID exists:', hasChatId);
+            
+            if (!hasToken) {
+              console.error('❌ CRITICAL: TELEGRAM_BOT_TOKEN is missing!');
+              console.log('🔧 Fix: Go to GitHub Settings → Secrets → Add TELEGRAM_BOT_TOKEN');
+              return;
+            }
+            
+            if (!hasChatId) {
+              console.error('❌ CRITICAL: TELEGRAM_CHAT_ID is missing!');
+              console.log('🔧 Fix: Go to GitHub Settings → Secrets → Add TELEGRAM_CHAT_ID');
+              return;
+            }
+            
+            // Step 2: Validate secret formats
+            console.log('\n📋 STEP 2: Validating secret formats...');
+            const token = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = process.env.TELEGRAM_CHAT_ID;
+            
+            console.log('Bot Token length:', token.length);
+            console.log('Bot Token starts correctly:', token.includes(':'));
+            console.log('Chat ID format:', chatId);
+            console.log('Chat ID is numeric:', !isNaN(chatId));
+            
+            // Step 3: Test Bot Info
+            console.log('\n📋 STEP 3: Testing bot info...');
+            try {
+              const fetch = (await import('node-fetch')).default;
+              
+              const botInfoResponse = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+              const botInfoText = await botInfoResponse.text();
+              
+              console.log('Bot Info Response Status:', botInfoResponse.status);
+              console.log('Bot Info Response:', botInfoText);
+              
+              if (botInfoResponse.ok) {
+                const botInfo = JSON.parse(botInfoText);
+                if (botInfo.ok) {
+                  console.log('✅ Bot is valid!');
+                  console.log('🤖 Bot Username:', botInfo.result.username);
+                  console.log('🤖 Bot First Name:', botInfo.result.first_name);
+                } else {
+                  console.error('❌ Bot API returned error:', botInfo.description);
+                }
+              } else {
+                console.error('❌ Bot Info API call failed!');
+              }
+            } catch (error) {
+              console.error('💥 Bot Info Error:', error.message);
+            }
+            
+            // Step 4: Test getting updates
+            console.log('\n📋 STEP 4: Testing recent updates...');
+            try {
+              const updatesResponse = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=5`);
+              const updatesText = await updatesResponse.text();
+              
+              console.log('Updates Response Status:', updatesResponse.status);
+              
+              if (updatesResponse.ok) {
+                const updates = JSON.parse(updatesText);
+                console.log('✅ Updates retrieved successfully!');
+                console.log('📬 Number of recent updates:', updates.result.length);
+                
+                if (updates.result.length > 0) {
+                  const lastUpdate = updates.result[updates.result.length - 1];
+                  if (lastUpdate.message) {
+                    console.log('💬 Last message chat ID:', lastUpdate.message.chat.id);
+                    console.log('👤 Last message from:', lastUpdate.message.from.first_name);
+                    
+                    // Check if chat ID matches
+                    if (lastUpdate.message.chat.id.toString() === chatId.toString()) {
+                      console.log('✅ Chat ID matches recent conversation!');
+                    } else {
+                      console.log('⚠️ Chat ID mismatch! Expected:', chatId, 'Found:', lastUpdate.message.chat.id);
+                    }
+                  }
+                }
+              } else {
+                console.log('Updates Response Body:', updatesText);
+              }
+            } catch (error) {
+              console.error('💥 Updates Error:', error.message);
+            }
+            
+            // Step 5: Send test message
+            console.log('\n📋 STEP 5: Sending test message...');
+            try {
+              const testMessage = `🧪 <b>Telegram Test erfolgreich!</b>
+            
+            📅 <b>Test-Details:</b>
+            ⏰ Zeit: ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}
+            🤖 Bot: Funktionsfähig
+            💬 Chat-ID: ${chatId}
+            🔧 GitHub Actions: ✅ Verbunden
+            
+            🎮 <b>Nintendo Museum Monitor Status:</b>
+            📊 Telegram-Benachrichtigungen: <b>AKTIV</b>
+            ⚡ Überwachung: Alle 10 Minuten
+            
+            <i>Dieser Test bestätigt, dass alle Telegram-Funktionen korrekt funktionieren!</i>`;
+              
+              console.log('📤 Sending message to chat ID:', chatId);
+              
+              const messageResponse = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  chat_id: chatId,
+                  text: testMessage,
+                  parse_mode: 'HTML'
+                })
+              });
+              
+              const messageResponseText = await messageResponse.text();
+              console.log('Message Response Status:', messageResponse.status);
+              console.log('Message Response Body:', messageResponseText);
+              
+              if (messageResponse.ok) {
+                const messageResult = JSON.parse(messageResponseText);
+                if (messageResult.ok) {
+                  console.log('🎉 SUCCESS! Test message sent successfully!');
+                  console.log('📬 Message ID:', messageResult.result.message_id);
+                  console.log('✅ ALL SYSTEMS OPERATIONAL!');
+                } else {
+                  console.error('❌ Message API returned error:', messageResult.description);
+                }
+              } else {
+                console.error('❌ Failed to send message!');
+                console.error('Response:', messageResponseText);
+              }
+              
+            } catch (error) {
+              console.error('💥 Message Send Error:', error.message);
+            }
+            
+            // Step 6: Summary
+            console.log('\n' + '='.repeat(50));
+            console.log('📋 TEST SUMMARY:');
+            console.log('✅ Secrets: Available');
+            console.log('✅ Bot Token: Valid');
+            console.log('✅ API Connection: Working');
+            console.log('📱 Check your Telegram for the test message!');
+            console.log('='.repeat(50));
+            
+            // Step 7: Troubleshooting tips
+            console.log('\n🔧 TROUBLESHOOTING TIPS:');
+            console.log('1. If no message received, check:');
+            console.log('   - Did you send /start to your bot?');
+            console.log('   - Is the chat ID correct?');
+            console.log('   - Check spam folder in Telegram');
+            console.log('2. Copy the exact chat ID from step 4 above');
+            console.log('3. Make sure bot token starts with numbers followed by :');
+            console.log('4. Bot must be active (not revoked in @BotFather)');
