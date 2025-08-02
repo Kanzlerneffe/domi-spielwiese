@@ -3,7 +3,12 @@ name: Museum Slot Monitor
 on:
   schedule:
     - cron: '*/5 * * * *'  # Läuft alle 5 Minuten
-  workflow_dispatch:  # Ermöglicht manuelle Ausführung
+  workflow_dispatch:        # Ermöglicht manuelle Ausführung
+
+# Explizit den Schedule aktivieren
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -12,6 +17,7 @@ permissions:
 jobs:
   check-museum-slots:
     runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v3
       
@@ -34,22 +40,41 @@ jobs:
             
             async function sendTelegramMessage(message) {
               try {
+                console.log('Versuche Telegram-Nachricht zu senden...');
+                
+                if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+                  throw new Error('Telegram Credentials fehlen!');
+                }
+                
                 const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-                await axios.post(telegramUrl, {
+                console.log(`Sende an Chat ID: ${process.env.TELEGRAM_CHAT_ID}`);
+                
+                const response = await axios.post(telegramUrl, {
                   chat_id: process.env.TELEGRAM_CHAT_ID,
                   text: message,
                   parse_mode: 'HTML'
                 });
+                
+                console.log('Telegram-Nachricht erfolgreich gesendet!');
+                return response.data;
               } catch (error) {
                 console.error('Fehler beim Senden der Telegram-Nachricht:', error);
+                console.error('Error details:', {
+                  message: error.message,
+                  response: error.response ? {
+                    status: error.response.status,
+                    data: error.response.data
+                  } : 'No response data'
+                });
+                throw error;
               }
             }
             
             async function checkSeptemberSlots() {
               try {
-                console.log('Prüfe September 2024 Slots...');
+                console.log('Starte Überprüfung der September 2024 Slots...');
                 
-                // Versuche die Kalenderseite zu laden
+                console.log('Lade Kalenderseite...');
                 const calendarResponse = await axios.get('https://museum-tickets.nintendo.com/en/calendar', {
                   headers: {
                     'Accept': 'text/html',
@@ -57,7 +82,8 @@ jobs:
                   }
                 });
                 
-                // Wenn die Kalenderseite lädt, versuche September 2024 zu laden
+                console.log('Kalenderseite erfolgreich geladen. Prüfe September API...');
+                
                 const septemberUrl = 'https://museum-tickets.nintendo.com/api/calendar/2024-09';
                 try {
                   const septemberResponse = await axios.get(septemberUrl, {
@@ -67,10 +93,13 @@ jobs:
                     }
                   });
                   
+                  console.log('September API Antwort erhalten');
+                  
                   const septemberData = septemberResponse.data;
                   
                   if (!septemberData || !septemberData.days) {
                     console.log('September 2024 ist noch nicht verfügbar.');
+                    await sendTelegramMessage('ℹ️ <b>Status Update:</b>\nSeptember 2024 Termine sind noch nicht im System verfügbar.');
                     return;
                   }
                   
@@ -148,7 +177,8 @@ jobs:
                   
                 } catch (error) {
                   if (error.response && error.response.status === 404) {
-                    console.log('September 2024 ist noch nicht im System verfügbar.');
+                    console.log('September 2024 ist noch nicht im System.');
+                    await sendTelegramMessage('ℹ️ <b>Status Update:</b>\nSeptember 2024 Termine sind noch nicht im System verfügbar.');
                     return;
                   }
                   throw error;
@@ -156,9 +186,6 @@ jobs:
                 
               } catch (error) {
                 console.error('Fehler beim Überprüfen der Slots:', error);
-                if (error.response && error.response.status === 404) {
-                  return;
-                }
                 const errorMessage = `❌ <b>Fehler beim Überprüfen der Museum-Slots:</b>\n\n${error.message}\n\nDer Bot läuft weiter und prüft beim nächsten Durchlauf erneut.`;
                 await sendTelegramMessage(errorMessage);
                 core.setFailed(error.message);
