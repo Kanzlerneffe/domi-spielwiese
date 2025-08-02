@@ -40,11 +40,7 @@ jobs:
             
             async function sendTelegramMessage(message) {
               try {
-                if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
-                  console.log('⚠️ Telegram credentials missing - console output only');
-                  console.log(message);
-                  return;
-                }
+                console.log('📤 Sending Telegram message...');
                 
                 const fetch = (await import('node-fetch')).default;
                 const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -58,31 +54,34 @@ jobs:
                 });
                 
                 if (response.ok) {
-                  console.log('✅ Telegram message sent successfully');
+                  console.log('✅ Telegram message sent successfully!');
+                  return true;
                 } else {
-                  console.error('❌ Telegram API error:', await response.text());
+                  const errorText = await response.text();
+                  console.error('❌ Telegram API error:', errorText);
+                  return false;
                 }
               } catch (error) {
-                console.error('❌ Telegram error:', error.message);
-                console.log('📝 Message (fallback):', message);
+                console.error('❌ Error sending message:', error.message);
+                return false;
               }
             }
 
             async function checkNintendoMuseum() {
               let browser;
+              let statusMessage = '';
               
               try {
-                console.log('🚀 Starting browser...');
+                console.log('🚀 Starting Nintendo Museum monitoring...');
+                
                 browser = await chromium.launch({ 
                   headless: true,
                   args: ['--no-sandbox', '--disable-setuid-sandbox']
                 });
                 
                 const page = await browser.newPage();
-                
-                // Set longer timeout and user agent
                 page.setDefaultTimeout(45000);
-                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
                 
                 console.log('🎮 Loading Nintendo Museum calendar...');
                 await page.goto('https://museum-tickets.nintendo.com/en/calendar', {
@@ -90,38 +89,31 @@ jobs:
                   timeout: 45000
                 });
                 
-                console.log('⏳ Waiting for page to fully load...');
+                // Wait for dynamic content
+                await page.waitForTimeout(5000);
                 
-                // Try multiple selectors to find calendar
-                let calendarLoaded = false;
+                console.log('🔍 Analyzing September calendar data...');
+                
+                // Try to find calendar elements
+                let calendarFound = false;
                 const selectors = [
                   'gridcell',
-                  '[role="gridcell"]',
-                  '.calendar',
-                  '[aria-label*="September"]',
-                  'table'
+                  '[role="gridcell"]', 
+                  'table td',
+                  '.calendar-day',
+                  '.day'
                 ];
                 
                 for (const selector of selectors) {
                   try {
-                    console.log(`🔍 Trying selector: ${selector}`);
-                    await page.waitForSelector(selector, { timeout: 10000 });
-                    console.log(`✅ Found calendar with selector: ${selector}`);
-                    calendarLoaded = true;
+                    await page.waitForSelector(selector, { timeout: 5000 });
+                    console.log(`✅ Found calendar elements: ${selector}`);
+                    calendarFound = true;
                     break;
                   } catch (e) {
-                    console.log(`❌ Selector ${selector} failed: ${e.message}`);
+                    console.log(`❌ Selector failed: ${selector}`);
                   }
                 }
-                
-                if (!calendarLoaded) {
-                  throw new Error('Calendar elements not found with any selector');
-                }
-                
-                // Wait a bit more for dynamic content
-                await page.waitForTimeout(3000);
-                
-                console.log('🔍 Analyzing September calendar data...');
                 
                 const septemberData = await page.evaluate(() => {
                   const results = {};
@@ -129,61 +121,59 @@ jobs:
                   const currentYear = today.getFullYear();
                   const targetYear = today.getMonth() >= 8 ? currentYear + 1 : currentYear;
                   
-                  console.log('Target year:', targetYear);
-                  
                   // Find all possible calendar cells
-                  const possibleSelectors = [
+                  const allSelectors = [
                     'gridcell',
                     '[role="gridcell"]',
+                    'table td',
                     '.calendar-day',
                     '.day',
-                    'td'
+                    'div[aria-label*="September"]'
                   ];
                   
-                  let cells = [];
-                  for (const sel of possibleSelectors) {
-                    const found = document.querySelectorAll(sel);
-                    if (found.length > 0) {
-                      cells = found;
-                      console.log(`Found ${found.length} cells with selector: ${sel}`);
-                      break;
+                  let foundCells = [];
+                  allSelectors.forEach(sel => {
+                    const cells = document.querySelectorAll(sel);
+                    if (cells.length > 0 && foundCells.length === 0) {
+                      foundCells = Array.from(cells);
+                      console.log(`Using ${cells.length} cells from selector: ${sel}`);
                     }
-                  }
+                  });
                   
-                  if (cells.length === 0) {
-                    console.error('No calendar cells found!');
-                    return {};
-                  }
-                  
-                  cells.forEach((cell, index) => {
+                  foundCells.forEach(cell => {
                     const dateText = cell.textContent?.trim();
                     const ariaLabel = cell.getAttribute('aria-label') || '';
                     const innerHTML = cell.innerHTML || '';
                     
-                    console.log(`Cell ${index}: text="${dateText}", aria="${ariaLabel}"`);
-                    
                     // Check if this is a September date
-                    const isSeptember = ariaLabel.includes('September 2025') || 
-                                       ariaLabel.includes('September ' + targetYear) ||
-                                       (cell.closest('[data-month="9"]')) ||
-                                       (cell.closest('.september'));
+                    const isSeptemberCell = ariaLabel.includes('September 2025') || 
+                                          ariaLabel.includes(`September ${targetYear}`) ||
+                                          (ariaLabel.includes('September') && cell.closest('[data-month="9"]'));
                     
-                    if (isSeptember || (dateText && !isNaN(dateText) && dateText <= 31 && dateText >= 1)) {
+                    // Or if it's a number that could be a September date
+                    const isDateNumber = dateText && !isNaN(dateText) && 
+                                        parseInt(dateText) >= 1 && parseInt(dateText) <= 31;
+                    
+                    if (isSeptemberCell || (isDateNumber && foundCells.indexOf(cell) < 50)) {
                       const dayNum = dateText;
+                      
+                      // Check if day is closed/off
                       const hasOff = innerHTML.includes('"off"') || 
+                                   innerHTML.includes('closed') ||
                                    innerHTML.includes('off') ||
                                    cell.classList.contains('off') ||
                                    cell.classList.contains('closed');
                       
+                      // Check if clickable/available
                       const styles = window.getComputedStyle(cell);
                       const hasPointer = styles.cursor === 'pointer' ||
-                                       cell.style.cursor === 'pointer' ||
                                        cell.hasAttribute('onclick') ||
-                                       cell.querySelector('a');
+                                       cell.querySelector('a') ||
+                                       cell.getAttribute('data-clickable') === 'true';
                       
                       const isClickable = hasPointer && !hasOff;
                       
-                      if (dayNum && !isNaN(dayNum) && dayNum <= 31 && dayNum >= 1) {
+                      if (dayNum && !isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
                         const formattedDate = `${dayNum.padStart(2, '0')}.09`;
                         
                         let status;
@@ -199,109 +189,97 @@ jobs:
                           day: dayNum,
                           status: status,
                           available: isClickable,
-                          closed: hasOff,
-                          debug: {
-                            hasOff,
-                            hasPointer,
-                            cursor: styles.cursor,
-                            innerHTML: innerHTML.substring(0, 100)
-                          }
+                          closed: hasOff
                         };
-                        
-                        console.log(`Added date: ${formattedDate} - ${status}`);
                       }
                     }
                   });
                   
-                  console.log('Final results:', Object.keys(results));
                   return results;
                 });
                 
-                console.log('📊 September analysis complete:', Object.keys(septemberData).length, 'days found');
+                console.log('📊 Found September dates:', Object.keys(septemberData).length);
                 
-                if (Object.keys(septemberData).length === 0) {
-                  // Try to get page content for debugging
-                  const pageContent = await page.content();
-                  const hasCalendar = pageContent.includes('September') || pageContent.includes('calendar');
-                  
-                  let debugMessage = '⚠️ <b>Nintendo Museum Monitor</b>\n\n';
-                  debugMessage += 'Keine September-Daten gefunden.\n';
-                  debugMessage += hasCalendar ? 'Kalender vorhanden, aber Parsing fehlgeschlagen.\n' : 'Kalender nicht geladen.\n';
-                  debugMessage += '\n🔗 <a href="https://museum-tickets.nintendo.com/en/calendar">Manuelle Prüfung</a>';
-                  debugMessage += '\n🔧 Debug wird verbessert...';
-                  
-                  await sendTelegramMessage(debugMessage);
-                  return;
-                }
-                
-                // Build status message
-                let message = '🎮 <b>Nintendo Museum Status Update</b>\n';
-                message += '📅 September 2025\n';
-                message += '⚡ <i>Monitoring alle 10 Minuten</i>\n\n';
+                // Build status message - ALWAYS send
+                statusMessage = '🎮 <b>Nintendo Museum Status Update</b>\n';
+                statusMessage += '📅 September 2025\n';
+                statusMessage += '⚡ <i>Live-Monitoring alle 10 Minuten</i>\n\n';
                 
                 let availableCount = 0;
                 let availableDates = [];
+                let closedCount = 0;
+                let soldOutCount = 0;
                 
-                // Sort dates and build message
-                const sortedDates = Object.keys(septemberData).sort();
-                
-                sortedDates.forEach(date => {
-                  const data = septemberData[date];
-                  const emoji = data.available ? '🎟️' : (data.closed ? '🔒' : '❌');
-                  message += `${emoji} <b>${date}</b> = ${data.status}\n`;
+                if (Object.keys(septemberData).length > 0) {
+                  // Sort dates and build detailed status
+                  const sortedDates = Object.keys(septemberData).sort();
                   
-                  if (data.available) {
-                    availableCount++;
-                    availableDates.push(date);
-                  }
-                });
-                
-                message += `\n📊 <b>Zusammenfassung:</b>\n`;
-                message += `✅ Verfügbare Termine: ${availableCount}\n`;
-                
-                if (availableCount > 0) {
-                  message += `🚨 <b>SOFORT BUCHEN:</b> ${availableDates.join(', ')}\n`;
-                  message += `🏃‍♂️ <b>Tickets können schnell weg sein!</b>\n`;
-                }
-                
-                message += `\n🔗 <a href="https://museum-tickets.nintendo.com/en/calendar">Zur Buchungsseite</a>`;
-                message += `\n⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}`;
-                message += `\n⚡ Nächste Prüfung: in 10 Minuten`;
-                
-                // Send message if tickets available OR every 6th run (hourly)
-                const shouldSendUpdate = availableCount > 0 || (Math.floor(Date.now() / 600000) % 6 === 0);
-                
-                if (shouldSendUpdate) {
-                  await sendTelegramMessage(message);
+                  sortedDates.forEach(date => {
+                    const data = septemberData[date];
+                    const emoji = data.available ? '🎟️' : (data.closed ? '🔒' : '❌');
+                    statusMessage += `${emoji} <b>${date}</b> = ${data.status}\n`;
+                    
+                    if (data.available) {
+                      availableCount++;
+                      availableDates.push(date);
+                    } else if (data.closed) {
+                      closedCount++;
+                    } else {
+                      soldOutCount++;
+                    }
+                  });
+                  
+                  statusMessage += `\n📊 <b>Zusammenfassung:</b>\n`;
+                  statusMessage += `🎟️ Verfügbar: ${availableCount}\n`;
+                  statusMessage += `❌ Ausverkauft: ${soldOutCount}\n`;
+                  statusMessage += `🔒 Geschlossen: ${closedCount}\n`;
+                  
                 } else {
-                  console.log('🔕 No tickets, waiting for hourly update...');
+                  statusMessage += '⚠️ <i>September-Kalender noch nicht verfügbar oder Parsing fehlgeschlagen</i>\n';
+                  statusMessage += '🔧 <i>Monitoring läuft weiter...</i>\n';
                 }
                 
-                // Create GitHub issue if tickets are available
                 if (availableCount > 0) {
+                  statusMessage += `\n🚨 <b>SOFORT BUCHEN:</b> ${availableDates.join(', ')}\n`;
+                  statusMessage += `🏃‍♂️ <b>Tickets können schnell weg sein!</b>\n`;
+                }
+                
+                statusMessage += `\n🔗 <a href="https://museum-tickets.nintendo.com/en/calendar">Zur Buchungsseite</a>`;
+                statusMessage += `\n⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}`;
+                statusMessage += `\n⚡ Nächste Prüfung: in 10 Minuten`;
+                
+                // ALWAYS send message (every 10 minutes)
+                console.log('📤 Sending status update...');
+                const messageSent = await sendTelegramMessage(statusMessage);
+                
+                if (!messageSent) {
+                  console.error('❌ Failed to send Telegram message');
+                }
+                
+                // Create GitHub issue only if tickets are available
+                if (availableCount > 0) {
+                  console.log('🎯 Creating GitHub issue for available tickets...');
+                  
                   const issueTitle = `🚨 Nintendo Museum Tickets verfügbar! (${availableDates.join(', ')})`;
-                  const issueBody = `**🚨 SOFORT HANDELN! 🚨**\n\n${message.replace(/<[^>]*>/g, '')}\n\n[JETZT BUCHEN!](https://museum-tickets.nintendo.com/en/calendar)`;
+                  const issueBody = `**🚨 SOFORT HANDELN! 🚨**\n\n${statusMessage.replace(/<[^>]*>/g, '')}\n\n**Verfügbare Termine:** ${availableDates.join(', ')}\n\n[JETZT BUCHEN!](https://museum-tickets.nintendo.com/en/calendar)\n\n---\n⚡ **Live-Monitoring aktiv** - alle 10 Minuten\n📱 **Telegram-Alerts** - sofortige Benachrichtigung`;
                   
                   await github.rest.issues.create({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     title: issueTitle,
                     body: issueBody,
-                    labels: ['🎯 ticket-alert', '🎮 nintendo-museum', '🚨 urgent']
+                    labels: ['🎯 ticket-alert', '🎮 nintendo-museum', '🚨 urgent', '⚡ live-monitoring']
                   });
                   
-                  console.log('🎯 GitHub issue created');
+                  console.log('✅ GitHub issue created successfully');
                 }
                 
               } catch (error) {
                 console.error('💥 Error during monitoring:', error);
                 
-                let errorMsg = `❌ <b>Nintendo Museum Monitor Fehler</b>\n\n`;
-                errorMsg += `<code>${error.message}</code>\n\n`;
-                errorMsg += `⏰ Nächste Prüfung in 10 Minuten\n`;
-                errorMsg += `🔧 Fehler wird analysiert und behoben`;
+                const errorMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>\n\n<code>${error.message}</code>\n\n⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}\n🔧 Nächste Prüfung in 10 Minuten\n\n<i>Monitor läuft weiter...</i>`;
                 
-                await sendTelegramMessage(errorMsg);
+                await sendTelegramMessage(errorMessage);
               } finally {
                 if (browser) {
                   await browser.close();
