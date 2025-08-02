@@ -1,0 +1,71 @@
+name: Museum Slot Monitor
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Läuft alle 15 Minuten
+  workflow_dispatch:  # Ermöglicht manuelle Ausführung
+
+jobs:
+  check-museum-slots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install dependencies
+        run: npm install axios cheerio
+
+      - name: Check for slots
+        uses: actions/github-script@v6
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        with:
+          script: |
+            const axios = require('axios');
+            const cheerio = require('cheerio');
+            
+            async function sendTelegramMessage(message) {
+              const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+              await axios.post(telegramUrl, {
+                chat_id: process.env.TELEGRAM_CHAT_ID,
+                text: message,
+                parse_mode: 'HTML'
+              });
+            }
+            
+            async function checkMuseumSlots() {
+              try {
+                const response = await axios.get('https://museum-tickets.nintendo.com/en/calendar');
+                const currentContent = response.data;
+                
+                const fs = require('fs');
+                const previousContent = fs.existsSync('previous-state.txt') 
+                  ? fs.readFileSync('previous-state.txt', 'utf8')
+                  : '';
+                
+                if (currentContent !== previousContent) {
+                  // Create GitHub Issue
+                  await github.rest.issues.create({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    title: '🎮 Neue Verfügbarkeit im Nintendo Museum entdeckt!',
+                    body: 'Es wurden Änderungen auf der Buchungsseite des Nintendo Museums erkannt. \n\nBitte überprüfen Sie die Verfügbarkeit unter: https://museum-tickets.nintendo.com/en/calendar'
+                  });
+                  
+                  // Send Telegram notification
+                  await sendTelegramMessage('🎮 <b>Nintendo Museum Update!</b>\n\nEs wurden neue Änderungen auf der Buchungsseite erkannt.\nJetzt überprüfen: https://museum-tickets.nintendo.com/en/calendar');
+                  
+                  fs.writeFileSync('previous-state.txt', currentContent);
+                }
+              } catch (error) {
+                console.error('Error checking museum slots:', error);
+                core.setFailed(error.message);
+              }
+            }
+            
+            await checkMuseumSlots();
