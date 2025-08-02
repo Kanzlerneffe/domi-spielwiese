@@ -1,9 +1,9 @@
-name: Museum Slot Monitor
+name: Nintendo Museum Ticket Monitor
 
 on:
   schedule:
-    - cron: '*/15 5-21 * * *'  # Alle 15 min zwischen 7:30-23:30 Berliner Zeit (UTC+2)
-  workflow_dispatch:
+    - cron: '*/30 6-22 * * *'  # Alle 30 min zwischen 8:00-24:00 Berlin Zeit
+  workflow_dispatch:  # Manueller Start möglich
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,20 +16,19 @@ permissions:
 jobs:
   check-museum-slots:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           
       - name: Install dependencies
-        run: npm install axios
+        run: npm install axios cheerio
 
-      - name: Check for slots
-        uses: actions/github-script@v6
+      - name: Check Nintendo Museum Tickets
+        uses: actions/github-script@v7
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -40,162 +39,170 @@ jobs:
             async function sendTelegramMessage(message) {
               try {
                 if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
-                  throw new Error('Telegram Credentials fehlen! Bitte TELEGRAM_BOT_TOKEN und TELEGRAM_CHAT_ID in den Repository Secrets konfigurieren.');
+                  console.log('⚠️ Telegram-Credentials fehlen - sende nur Console-Output');
+                  console.log(message);
+                  return;
                 }
                 
                 const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-                console.log('Sende Telegram-Nachricht...');
                 
-                const response = await axios.post(telegramUrl, {
+                await axios.post(telegramUrl, {
                   chat_id: process.env.TELEGRAM_CHAT_ID,
                   text: message,
-                  parse_mode: 'HTML'
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: false
                 });
                 
-                console.log('Telegram-Nachricht erfolgreich gesendet');
-                return response.data;
+                console.log('✅ Telegram-Nachricht gesendet');
               } catch (error) {
-                console.error('Detaillierter Telegram-Fehler:', {
-                  message: error.message,
-                  response: error.response ? {
-                    status: error.response.status,
-                    statusText: error.response.statusText,
-                    data: error.response.data
-                  } : 'Keine Response-Daten',
-                  request: {
-                    url: telegramUrl,
-                    chatId: process.env.TELEGRAM_CHAT_ID ? 'Vorhanden' : 'Fehlt',
-                    token: process.env.TELEGRAM_BOT_TOKEN ? 'Vorhanden' : 'Fehlt'
-                  }
-                });
-                throw new Error(`Telegram-Fehler: ${error.message}`);
+                console.error('❌ Telegram-Fehler:', error.message);
+                console.log('📝 Nachricht (Fallback):', message);
               }
             }
 
             function formatDate(dateStr) {
-              try {
-                const date = new Date(dateStr);
-                if (isNaN(date.getTime())) {
-                  throw new Error(`Ungültiges Datum: ${dateStr}`);
-                }
-                return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
-              } catch (error) {
-                console.error(`Fehler beim Formatieren des Datums ${dateStr}:`, error);
-                return dateStr;
-              }
+              const [year, month, day] = dateStr.split('-');
+              return `${day}.${month}`;
             }
 
-            function getTicketStatus(dayData) {
-              try {
-                if (!dayData) {
-                  throw new Error('Keine Tagesdaten vorhanden');
-                }
-                
-                console.log('Tages-Daten:', JSON.stringify({
-                  open_status: dayData.open_status,
-                  sale_status: dayData.sale_status,
-                  holiday: dayData.holiday,
-                  day_label: dayData.day_label
-                }));
-                
-                if (dayData.open_status === 2) return 'geschlossen';
-                if (dayData.sale_status === 1 && dayData.open_status === 1) return 'Tickets kaufbar! 🎉';
-                return 'keine Tickets kaufbar';
-              } catch (error) {
-                console.error('Fehler beim Ermitteln des Ticket-Status:', error);
-                return 'Status unbekannt';
-              }
+            function getStatusEmoji(dayData) {
+              if (!dayData) return '❓';
+              
+              // Museum geschlossen
+              if (dayData.open_status === 2) return '🔒';
+              
+              // Tickets verfügbar!
+              if (dayData.sale_status === 1 && dayData.open_status === 1) return '🎟️';
+              
+              // Ausverkauft/Nicht verfügbar
+              if (dayData.sale_status === 2) return '❌';
+              
+              return '⚪';
+            }
+
+            function getStatusText(dayData) {
+              if (!dayData) return 'Status unbekannt';
+              
+              if (dayData.open_status === 2) return 'Museum geschlossen';
+              if (dayData.sale_status === 1 && dayData.open_status === 1) return '🚨 VERFÜGBAR - JETZT SCHNELL! 🚨';
+              if (dayData.sale_status === 2) return 'Ausverkauft';
+              
+              return 'Nicht verfügbar';
             }
             
             async function fetchCalendarData(year, month) {
               try {
-                const monthStr = month.toString().padStart(2, '0');
-                const url = `https://museum-tickets.nintendo.com/api/calendar/${year}-${monthStr}`;
-                console.log(`Versuche Kalenderdaten zu laden für: ${year}-${monthStr}`);
+                // Korrigierte API-URL basierend auf der Analyse
+                const url = `https://museum-tickets.nintendo.com/en/api/calendar?target_year=${year}&target_month=${month}`;
+                console.log(`🔍 Lade Kalenderdaten: ${url}`);
                 
                 const response = await axios.get(url, {
                   headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                  }
+                    'Accept': 'application/json, text/plain, */*',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://museum-tickets.nintendo.com/en/calendar',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                  },
+                  timeout: 10000
                 });
                 
-                console.log('API Response Status:', response.status);
+                console.log(`✅ API Response Status: ${response.status}`);
                 
-                if (!response.data?.data?.calendar) {
-                  console.error('Unerwartetes API-Response-Format:', JSON.stringify(response.data));
-                  throw new Error('Ungültiges API-Response-Format');
+                if (response.data && response.data.data && response.data.data.calendar) {
+                  return response.data.data.calendar;
+                } else if (response.data && response.data.calendar) {
+                  return response.data.calendar;
+                } else {
+                  console.log('⚠️ Unerwartetes Datenformat:', JSON.stringify(response.data).substring(0, 200));
+                  return null;
                 }
                 
-                return response.data.data.calendar;
               } catch (error) {
-                console.error('Detaillierter API-Fehler:', {
+                console.error('❌ API-Fehler:', {
                   message: error.message,
-                  response: error.response ? {
-                    status: error.response.status,
-                    statusText: error.response.statusText,
-                    data: error.response.data
-                  } : 'Keine Response-Daten',
-                  url: url
+                  status: error.response?.status,
+                  statusText: error.response?.statusText
                 });
-                throw new Error(`API-Fehler: ${error.message}`);
+                return null;
               }
             }
             
-            async function checkSlots() {
+            async function checkMuseumSlots() {
               try {
                 const now = new Date();
                 const currentYear = now.getFullYear();
                 const currentMonth = now.getMonth() + 1;
+                
+                // Prüfe aktuelles Jahr September oder nächstes Jahr
                 const targetYear = currentMonth >= 9 ? currentYear + 1 : currentYear;
                 
-                console.log(`Prüfe September ${targetYear}...`);
+                console.log(`🎮 Prüfe Nintendo Museum September ${targetYear}...`);
                 
                 const septemberData = await fetchCalendarData(targetYear, 9);
                 
-                if (!septemberData || Object.keys(septemberData).length === 0) {
-                  await sendTelegramMessage(`ℹ️ Keine Daten für September ${targetYear} verfügbar. Der Kalender wurde noch nicht freigegeben.`);
+                if (!septemberData) {
+                  const fallbackMsg = `⚠️ Nintendo Museum API nicht erreichbar oder Datenformat geändert.\n\n🔗 Manuelle Prüfung: https://museum-tickets.nintendo.com/en/calendar`;
+                  await sendTelegramMessage(fallbackMsg);
                   return;
                 }
                 
-                let message = `🎮 Nintendo Museum Status Update\n\n`;
-                
                 const sortedDays = Object.entries(septemberData)
+                  .filter(([date]) => date.includes('2025-09-') || date.includes(`${targetYear}-09-`))
                   .sort(([dateA], [dateB]) => dateA.localeCompare(dateB));
                 
-                let ticketsAvailable = false;
+                if (sortedDays.length === 0) {
+                  await sendTelegramMessage(`ℹ️ September ${targetYear} Kalender noch nicht verfügbar.\n\n🔗 Link: https://museum-tickets.nintendo.com/en/calendar`);
+                  return;
+                }
+                
+                let message = `🎮 <b>Nintendo Museum Status Update</b>\n`;
+                message += `📅 September ${targetYear}\n\n`;
+                
+                let availableCount = 0;
+                let availableDates = [];
                 
                 sortedDays.forEach(([date, dayData]) => {
                   const formattedDate = formatDate(date);
-                  const status = getTicketStatus(dayData);
-                  message += `${formattedDate}: ${status}\n`;
+                  const emoji = getStatusEmoji(dayData);
+                  const status = getStatusText(dayData);
+                  
+                  message += `${emoji} <b>${formattedDate}</b> = ${status}\n`;
                   
                   if (dayData.sale_status === 1 && dayData.open_status === 1) {
-                    ticketsAvailable = true;
-                    console.log(`Tickets verfügbar für: ${date}`);
+                    availableCount++;
+                    availableDates.push(formattedDate);
                   }
                 });
                 
-                message += `\n🔗 Buchungslink: https://museum-tickets.nintendo.com/en/calendar`;
+                message += `\n📊 <b>Zusammenfassung:</b>\n`;
+                message += `✅ Verfügbare Tage: ${availableCount}\n`;
+                
+                if (availableCount > 0) {
+                  message += `🚨 <b>SCHNELL BUCHEN:</b> ${availableDates.join(', ')}\n`;
+                }
+                
+                message += `\n🔗 <a href="https://museum-tickets.nintendo.com/en/calendar">Zur Buchungsseite</a>`;
                 
                 await sendTelegramMessage(message);
                 
-                if (ticketsAvailable) {
-                  console.log('Erstelle GitHub Issue für verfügbare Tickets');
+                // GitHub Issue erstellen wenn Tickets verfügbar
+                if (availableCount > 0) {
+                  console.log('🎯 Erstelle GitHub Issue für verfügbare Tickets');
                   await github.rest.issues.create({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
-                    title: `🎮 Tickets für September ${targetYear} verfügbar!`,
-                    body: message
+                    title: `🎮 Nintendo Museum Tickets verfügbar! (${availableDates.join(', ')})`,
+                    body: `**🚨 SOFORT HANDELN! 🚨**\n\n${message.replace(/<[^>]*>/g, '')}\n\n**Verfügbare Termine:** ${availableDates.join(', ')}\n\n[Jetzt buchen!](https://museum-tickets.nintendo.com/en/calendar)`,
+                    labels: ['ticket-alert', 'nintendo-museum', 'urgent']
                   });
                 }
                 
               } catch (error) {
-                console.error('Fehler beim Überprüfen der Slots:', error);
-                const errorMessage = `❌ Fehler beim Überprüfen der Museum-Slots:\n\n${error.message}\n\nDer Bot läuft weiter und prüft beim nächsten Durchlauf erneut.`;
+                console.error('💥 Hauptfehler:', error);
+                const errorMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>\n\n${error.message}\n\n⏰ Nächste Prüfung in 30 Minuten`;
                 await sendTelegramMessage(errorMessage);
                 core.setFailed(error.message);
               }
             }
             
-            await checkSlots();
+            await checkMuseumSlots();
