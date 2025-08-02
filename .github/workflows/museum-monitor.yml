@@ -81,7 +81,7 @@ jobs:
                 return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
               } catch (error) {
                 console.error(`Fehler beim Formatieren des Datums ${dateStr}:`, error);
-                return dateStr; // Fallback: Original-String zurückgeben
+                return dateStr;
               }
             }
 
@@ -91,12 +91,12 @@ jobs:
                   throw new Error('Keine Tagesdaten vorhanden');
                 }
                 
-                console.log('Tages-Daten:', {
+                console.log('Tages-Daten:', JSON.stringify({
                   open_status: dayData.open_status,
                   sale_status: dayData.sale_status,
                   holiday: dayData.holiday,
                   day_label: dayData.day_label
-                });
+                }));
                 
                 if (dayData.open_status === 2) return 'geschlossen';
                 if (dayData.sale_status === 1 && dayData.open_status === 1) return 'Tickets kaufbar! 🎉';
@@ -121,10 +121,9 @@ jobs:
                 });
                 
                 console.log('API Response Status:', response.status);
-                console.log('API Response Headers:', response.headers);
                 
-                if (!response.data || !response.data.data || !response.data.data.calendar) {
-                  console.error('Unerwartetes API-Response-Format:', response.data);
+                if (!response.data?.data?.calendar) {
+                  console.error('Unerwartetes API-Response-Format:', JSON.stringify(response.data));
                   throw new Error('Ungültiges API-Response-Format');
                 }
                 
@@ -137,11 +136,7 @@ jobs:
                     statusText: error.response.statusText,
                     data: error.response.data
                   } : 'Keine Response-Daten',
-                  request: {
-                    url: url,
-                    year: year,
-                    month: month
-                  }
+                  url: url
                 });
                 throw new Error(`API-Fehler: ${error.message}`);
               }
@@ -154,30 +149,22 @@ jobs:
                 const currentMonth = now.getMonth() + 1;
                 const targetYear = currentMonth >= 9 ? currentYear + 1 : currentYear;
                 
-                console.log('Start der Überprüfung:', {
-                  currentDate: now.toISOString(),
-                  targetYear: targetYear,
-                  currentMonth: currentMonth
-                });
+                console.log(`Prüfe September ${targetYear}...`);
                 
                 const septemberData = await fetchCalendarData(targetYear, 9);
                 
                 if (!septemberData || Object.keys(septemberData).length === 0) {
-                  console.log('Keine Kalenderdaten gefunden');
                   await sendTelegramMessage(`ℹ️ Keine Daten für September ${targetYear} verfügbar. Der Kalender wurde noch nicht freigegeben.`);
                   return;
                 }
                 
-                console.log(`Gefundene Tage: ${Object.keys(septemberData).length}`);
-                
                 let message = `🎮 Nintendo Museum Status Update\n\n`;
                 
-                // Sortiere die Tage chronologisch
                 const sortedDays = Object.entries(septemberData)
                   .sort(([dateA], [dateB]) => dateA.localeCompare(dateB));
                 
-                // Erstelle die Statusliste
                 let ticketsAvailable = false;
+                
                 sortedDays.forEach(([date, dayData]) => {
                   const formattedDate = formatDate(date);
                   const status = getTicketStatus(dayData);
@@ -191,10 +178,8 @@ jobs:
                 
                 message += `\n🔗 Buchungslink: https://museum-tickets.nintendo.com/en/calendar`;
                 
-                // Sende die Nachricht
                 await sendTelegramMessage(message);
                 
-                // Erstelle Issue wenn Tickets verfügbar
                 if (ticketsAvailable) {
                   console.log('Erstelle GitHub Issue für verfügbare Tickets');
                   await github.rest.issues.create({
@@ -205,25 +190,9 @@ jobs:
                   });
                 }
                 
-                console.log('Überprüfung erfolgreich abgeschlossen');
-                
               } catch (error) {
-                console.error('Detaillierter Fehler beim Überprüfen der Slots:', {
-                  message: error.message,
-                  stack: error.stack,
-                  date: new Date().toISOString()
-                });
-                
-                const errorMessage = `❌ Fehler beim Überprüfen der Museum-Slots:
-
-Fehler: ${error.message}
-Zeit: ${new Date().toISOString()}
-
-Detaillierte Fehlermeldung:
-${error.stack || 'Keine Stack-Trace verfügbar'}
-
-Der Bot läuft weiter und prüft beim nächsten Durchlauf erneut.`;
-                
+                console.error('Fehler beim Überprüfen der Slots:', error);
+                const errorMessage = `❌ Fehler beim Überprüfen der Museum-Slots:\n\n${error.message}\n\nDer Bot läuft weiter und prüft beim nächsten Durchlauf erneut.`;
                 await sendTelegramMessage(errorMessage);
                 core.setFailed(error.message);
               }
