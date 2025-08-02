@@ -2,10 +2,9 @@ name: Museum Slot Monitor
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Läuft alle 5 Minuten
-  workflow_dispatch:        # Ermöglicht manuelle Ausführung
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
-# Explizit den Schedule aktivieren
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -59,13 +58,32 @@ jobs:
                 return response.data;
               } catch (error) {
                 console.error('Fehler beim Senden der Telegram-Nachricht:', error);
-                console.error('Error details:', {
-                  message: error.message,
-                  response: error.response ? {
-                    status: error.response.status,
-                    data: error.response.data
-                  } : 'No response data'
+                throw error;
+              }
+            }
+
+            function getDaysInMonth(year, month) {
+              return new Date(year, month, 0).getDate();
+            }
+            
+            async function fetchCalendarData() {
+              try {
+                const response = await axios.get('https://museum-tickets.nintendo.com/en/calendar', {
+                  headers: {
+                    'Accept': 'text/html',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                  }
                 });
+                
+                const html = response.data;
+                const dataLayerMatch = html.match(/window\.dataLayer\s*=\s*(\[.*?\]);/s);
+                if (dataLayerMatch) {
+                  const dataLayer = JSON.parse(dataLayerMatch[1]);
+                  return dataLayer;
+                }
+                return null;
+              } catch (error) {
+                console.error('Fehler beim Laden der Kalenderseite:', error);
                 throw error;
               }
             }
@@ -74,114 +92,101 @@ jobs:
               try {
                 console.log('Starte Überprüfung der September 2024 Slots...');
                 
-                console.log('Lade Kalenderseite...');
-                const calendarResponse = await axios.get('https://museum-tickets.nintendo.com/en/calendar', {
-                  headers: {
-                    'Accept': 'text/html',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                  }
-                });
+                const calendarData = await fetchCalendarData();
+                if (!calendarData) {
+                  throw new Error('Keine Kalenderdaten gefunden');
+                }
                 
-                console.log('Kalenderseite erfolgreich geladen. Prüfe September API...');
+                // Suche nach September 2024 Daten im dataLayer
+                const septemberData = calendarData.find(item => 
+                  item.calendar && 
+                  item.calendar.dates && 
+                  Object.keys(item.calendar.dates).some(date => date.startsWith('2024-09'))
+                );
                 
-                const septemberUrl = 'https://museum-tickets.nintendo.com/api/calendar/2024-09';
-                try {
-                  const septemberResponse = await axios.get(septemberUrl, {
-                    headers: {
-                      'Accept': 'application/json',
-                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                    }
-                  });
-                  
-                  console.log('September API Antwort erhalten');
-                  
-                  const septemberData = septemberResponse.data;
-                  
-                  if (!septemberData || !septemberData.days) {
-                    console.log('September 2024 ist noch nicht verfügbar.');
-                    await sendTelegramMessage('ℹ️ <b>Status Update:</b>\nSeptember 2024 Termine sind noch nicht im System verfügbar.');
-                    return;
-                  }
-                  
-                  // Erstelle eine sortierte Liste aller Septembertage
-                  const allDays = Object.entries(septemberData.days)
-                    .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
-                    .map(([date, dayData]) => {
-                      const availableSlots = [];
-                      const unavailableSlots = [];
+                // Erstelle ein Objekt mit allen Tagen des Septembers
+                const totalDays = getDaysInMonth(2024, 9);
+                const allSeptemberDays = {};
+                for (let day = 1; day <= totalDays; day++) {
+                  const date = `2024-09-${day.toString().padStart(2, '0')}`;
+                  allSeptemberDays[date] = {
+                    date: date,
+                    available: false,
+                    slots: []
+                  };
+                }
+                
+                // Fülle die verfügbaren Daten ein
+                if (septemberData && septemberData.calendar && septemberData.calendar.dates) {
+                  Object.entries(septemberData.calendar.dates)
+                    .filter(([date]) => date.startsWith('2024-09'))
+                    .forEach(([date, dateData]) => {
+                      const slots = dateData.timeslots || [];
+                      const availableSlots = slots.filter(slot => slot.available);
                       
-                      if (dayData.availability && Array.isArray(dayData.availability)) {
-                        dayData.availability.forEach(slot => {
-                          if (slot.available === true) {
-                            availableSlots.push({
-                              time: slot.start_time,
-                              remaining: slot.remaining_tickets || 'unbekannt'
-                            });
-                          } else {
-                            unavailableSlots.push({
-                              time: slot.start_time
-                            });
-                          }
-                        });
-                      }
-                      
-                      return {
-                        date,
-                        availableSlots,
-                        unavailableSlots,
-                        hasAvailable: availableSlots.length > 0
+                      allSeptemberDays[date] = {
+                        date: date,
+                        available: availableSlots.length > 0,
+                        slots: slots.map(slot => ({
+                          time: slot.time,
+                          available: slot.available,
+                          remaining: slot.remaining_tickets
+                        }))
                       };
                     });
-                  
-                  // Erstelle die Nachricht
-                  let message = `🎮 <b>Nintendo Museum Status Update - September 2024</b>\n\n`;
-                  
-                  // Zuerst die Tage mit verfügbaren Slots
-                  const availableDays = allDays.filter(day => day.hasAvailable);
-                  if (availableDays.length > 0) {
-                    message += `✅ <b>Verfügbare Termine:</b>\n`;
-                    availableDays.forEach(day => {
-                      message += `\n📅 ${day.date}:\n`;
-                      day.availableSlots.forEach(slot => {
-                        message += `⏰ ${slot.time} (${slot.remaining} Tickets)\n`;
+                }
+                
+                // Erstelle die Nachricht
+                let message = `🎮 <b>Nintendo Museum Status Update - September 2024</b>\n\n`;
+                
+                // Gruppiere nach Wochen für bessere Übersicht
+                const weeks = {};
+                Object.values(allSeptemberDays).forEach(day => {
+                  const date = new Date(day.date);
+                  const weekNum = Math.ceil(date.getDate() / 7);
+                  if (!weeks[weekNum]) weeks[weekNum] = [];
+                  weeks[weekNum].push(day);
+                });
+                
+                // Füge jede Woche zur Nachricht hinzu
+                Object.entries(weeks).forEach(([weekNum, days]) => {
+                  message += `\n<b>Woche ${weekNum}:</b>\n`;
+                  days.forEach(day => {
+                    const date = new Date(day.date);
+                    const dayName = date.toLocaleDateString('de-DE', { weekday: 'short' });
+                    const dayNum = date.getDate();
+                    
+                    if (day.slots.length === 0) {
+                      message += `📅 ${dayName} ${dayNum}: aktuell nicht verfügbar\n`;
+                    } else {
+                      message += `📅 ${dayName} ${dayNum}:\n`;
+                      day.slots.forEach(slot => {
+                        const status = slot.available 
+                          ? `✅ ${slot.remaining} Tickets verfügbar` 
+                          : '❌ ausgebucht';
+                        message += `⏰ ${slot.time}: ${status}\n`;
                       });
-                    });
-                  }
-                  
-                  // Dann die Tage ohne verfügbare Slots
-                  const unavailableDays = allDays.filter(day => !day.hasAvailable);
-                  if (unavailableDays.length > 0) {
-                    message += `\n❌ <b>Ausgebuchte Termine:</b>\n`;
-                    unavailableDays.forEach(day => {
-                      message += `\n📅 ${day.date}:\n`;
-                      day.unavailableSlots.forEach(slot => {
-                        message += `⏰ ${slot.time} (ausgebucht)\n`;
-                      });
-                    });
-                  }
-                  
-                  message += `\n🔗 <b>Buchungslink:</b> https://museum-tickets.nintendo.com/en/calendar`;
-                  
-                  // Sende die Nachricht
-                  await sendTelegramMessage(message);
-                  
-                  // Wenn es verfügbare Slots gibt, erstelle auch ein Issue
-                  if (availableDays.length > 0) {
-                    await github.rest.issues.create({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      title: `🎮 ${availableDays.length} Tag(e) mit freien Slots im September 2024 gefunden!`,
-                      body: message.replace(/<\/?b>/g, '**')
-                    });
-                  }
-                  
-                } catch (error) {
-                  if (error.response && error.response.status === 404) {
-                    console.log('September 2024 ist noch nicht im System.');
-                    await sendTelegramMessage('ℹ️ <b>Status Update:</b>\nSeptember 2024 Termine sind noch nicht im System verfügbar.');
-                    return;
-                  }
-                  throw error;
+                    }
+                  });
+                  message += '\n';
+                });
+                
+                message += `\n🔗 <b>Buchungslink:</b> https://museum-tickets.nintendo.com/en/calendar`;
+                
+                // Sende die Nachricht
+                await sendTelegramMessage(message);
+                
+                // Wenn es verfügbare Slots gibt, erstelle auch ein Issue
+                const hasAvailableSlots = Object.values(allSeptemberDays)
+                  .some(day => day.slots.some(slot => slot.available));
+                
+                if (hasAvailableSlots) {
+                  await github.rest.issues.create({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    title: `🎮 Freie Slots im September 2024 gefunden!`,
+                    body: message.replace(/<\/?b>/g, '**')
+                  });
                 }
                 
               } catch (error) {
