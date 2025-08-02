@@ -47,69 +47,118 @@ jobs:
             
             async function checkSeptemberSlots() {
               try {
-                // API-Anfrage für September 2024
                 console.log('Prüfe September 2024 Slots...');
-                const septemberResponse = await axios.get('https://museum-tickets.nintendo.com/api/calendar/2024-09', {
+                
+                // Versuche die Kalenderseite zu laden
+                const calendarResponse = await axios.get('https://museum-tickets.nintendo.com/en/calendar', {
                   headers: {
-                    'Accept': 'application/json',
+                    'Accept': 'text/html',
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                   }
                 });
                 
-                if (!septemberResponse.data || !septemberResponse.data.days) {
-                  throw new Error('Unerwartetes API-Antwortformat');
-                }
-                
-                const availableSlots = [];
-                Object.entries(septemberResponse.data.days).forEach(([date, dayData]) => {
-                  if (dayData.availability && Array.isArray(dayData.availability)) {
-                    const availableTimeslots = dayData.availability
-                      .filter(slot => slot.available === true)
-                      .map(slot => ({
-                        time: slot.start_time,
-                        remaining: slot.remaining_tickets || 'unbekannt'
-                      }));
-                      
-                    if (availableTimeslots.length > 0) {
-                      availableSlots.push({
-                        date: date,
-                        slots: availableTimeslots
-                      });
+                // Wenn die Kalenderseite lädt, versuche September 2024 zu laden
+                const septemberUrl = 'https://museum-tickets.nintendo.com/api/calendar/2024-09';
+                try {
+                  const septemberResponse = await axios.get(septemberUrl, {
+                    headers: {
+                      'Accept': 'application/json',
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     }
-                  }
-                });
-                
-                // Wenn Slots verfügbar sind
-                if (availableSlots.length > 0) {
-                  console.log(`${availableSlots.length} Tage mit freien Slots gefunden!`);
-                  
-                  const message = availableSlots
-                    .map(day => {
-                      const slotsInfo = day.slots
-                        .map(slot => `⏰ ${slot.time} (${slot.remaining} Tickets)`)
-                        .join('\n');
-                      return `📅 <b>${day.date}</b>:\n${slotsInfo}`;
-                    })
-                    .join('\n\n');
-                  
-                  const fullMessage = `🎮 <b>Freie Slots im Nintendo Museum (September 2024)!</b>\n\n${message}\n\n🔗 Jetzt buchen: https://museum-tickets.nintendo.com/en/calendar`;
-                  
-                  // Issue erstellen
-                  await github.rest.issues.create({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    title: `🎮 ${availableSlots.length} Tag(e) mit freien Slots im September gefunden!`,
-                    body: fullMessage.replace(/<\/?b>/g, '**')
                   });
                   
-                  // Telegram Nachricht senden
-                  await sendTelegramMessage(fullMessage);
-                } else {
-                  console.log('Keine freien Slots im September gefunden.');
+                  const septemberData = septemberResponse.data;
+                  
+                  if (!septemberData || !septemberData.days) {
+                    console.log('September 2024 ist noch nicht verfügbar.');
+                    return;
+                  }
+                  
+                  // Erstelle eine sortierte Liste aller Septembertage
+                  const allDays = Object.entries(septemberData.days)
+                    .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+                    .map(([date, dayData]) => {
+                      const availableSlots = [];
+                      const unavailableSlots = [];
+                      
+                      if (dayData.availability && Array.isArray(dayData.availability)) {
+                        dayData.availability.forEach(slot => {
+                          if (slot.available === true) {
+                            availableSlots.push({
+                              time: slot.start_time,
+                              remaining: slot.remaining_tickets || 'unbekannt'
+                            });
+                          } else {
+                            unavailableSlots.push({
+                              time: slot.start_time
+                            });
+                          }
+                        });
+                      }
+                      
+                      return {
+                        date,
+                        availableSlots,
+                        unavailableSlots,
+                        hasAvailable: availableSlots.length > 0
+                      };
+                    });
+                  
+                  // Erstelle die Nachricht
+                  let message = `🎮 <b>Nintendo Museum Status Update - September 2024</b>\n\n`;
+                  
+                  // Zuerst die Tage mit verfügbaren Slots
+                  const availableDays = allDays.filter(day => day.hasAvailable);
+                  if (availableDays.length > 0) {
+                    message += `✅ <b>Verfügbare Termine:</b>\n`;
+                    availableDays.forEach(day => {
+                      message += `\n📅 ${day.date}:\n`;
+                      day.availableSlots.forEach(slot => {
+                        message += `⏰ ${slot.time} (${slot.remaining} Tickets)\n`;
+                      });
+                    });
+                  }
+                  
+                  // Dann die Tage ohne verfügbare Slots
+                  const unavailableDays = allDays.filter(day => !day.hasAvailable);
+                  if (unavailableDays.length > 0) {
+                    message += `\n❌ <b>Ausgebuchte Termine:</b>\n`;
+                    unavailableDays.forEach(day => {
+                      message += `\n📅 ${day.date}:\n`;
+                      day.unavailableSlots.forEach(slot => {
+                        message += `⏰ ${slot.time} (ausgebucht)\n`;
+                      });
+                    });
+                  }
+                  
+                  message += `\n🔗 <b>Buchungslink:</b> https://museum-tickets.nintendo.com/en/calendar`;
+                  
+                  // Sende die Nachricht
+                  await sendTelegramMessage(message);
+                  
+                  // Wenn es verfügbare Slots gibt, erstelle auch ein Issue
+                  if (availableDays.length > 0) {
+                    await github.rest.issues.create({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      title: `🎮 ${availableDays.length} Tag(e) mit freien Slots im September 2024 gefunden!`,
+                      body: message.replace(/<\/?b>/g, '**')
+                    });
+                  }
+                  
+                } catch (error) {
+                  if (error.response && error.response.status === 404) {
+                    console.log('September 2024 ist noch nicht im System verfügbar.');
+                    return;
+                  }
+                  throw error;
                 }
                 
               } catch (error) {
                 console.error('Fehler beim Überprüfen der Slots:', error);
+                if (error.response && error.response.status === 404) {
+                  return;
+                }
                 const errorMessage = `❌ <b>Fehler beim Überprüfen der Museum-Slots:</b>\n\n${error.message}\n\nDer Bot läuft weiter und prüft beim nächsten Durchlauf erneut.`;
                 await sendTelegramMessage(errorMessage);
                 core.setFailed(error.message);
