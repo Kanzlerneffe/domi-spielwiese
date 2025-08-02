@@ -2,7 +2,7 @@ name: Museum Slot Monitor
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Läuft alle 15 Minuten
+    - cron: '*/5 * * * *'  # Läuft alle 5 Minuten
   workflow_dispatch:  # Ermöglicht manuelle Ausführung
 
 permissions:
@@ -31,45 +31,89 @@ jobs:
         with:
           script: |
             const axios = require('axios');
-            const cheerio = require('cheerio');
             
             async function sendTelegramMessage(message) {
-              const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-              await axios.post(telegramUrl, {
-                chat_id: process.env.TELEGRAM_CHAT_ID,
-                text: message,
-                parse_mode: 'HTML'
-              });
+              try {
+                const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+                await axios.post(telegramUrl, {
+                  chat_id: process.env.TELEGRAM_CHAT_ID,
+                  text: message,
+                  parse_mode: 'HTML'
+                });
+              } catch (error) {
+                console.error('Fehler beim Senden der Telegram-Nachricht:', error);
+              }
             }
             
-            async function checkMuseumSlots() {
+            async function checkSeptemberSlots() {
               try {
-                const response = await axios.get('https://museum-tickets.nintendo.com/en/calendar');
-                const currentContent = response.data;
+                // API-Anfrage für September 2024
+                console.log('Prüfe September 2024 Slots...');
+                const septemberResponse = await axios.get('https://museum-tickets.nintendo.com/api/calendar/2024-09', {
+                  headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                  }
+                });
                 
-                const fs = require('fs');
-                const previousContent = fs.existsSync('previous-state.txt') 
-                  ? fs.readFileSync('previous-state.txt', 'utf8')
-                  : '';
+                if (!septemberResponse.data || !septemberResponse.data.days) {
+                  throw new Error('Unerwartetes API-Antwortformat');
+                }
                 
-                if (currentContent !== previousContent) {
-                  // Create GitHub Issue
+                const availableSlots = [];
+                Object.entries(septemberResponse.data.days).forEach(([date, dayData]) => {
+                  if (dayData.availability && Array.isArray(dayData.availability)) {
+                    const availableTimeslots = dayData.availability
+                      .filter(slot => slot.available === true)
+                      .map(slot => ({
+                        time: slot.start_time,
+                        remaining: slot.remaining_tickets || 'unbekannt'
+                      }));
+                      
+                    if (availableTimeslots.length > 0) {
+                      availableSlots.push({
+                        date: date,
+                        slots: availableTimeslots
+                      });
+                    }
+                  }
+                });
+                
+                // Wenn Slots verfügbar sind
+                if (availableSlots.length > 0) {
+                  console.log(`${availableSlots.length} Tage mit freien Slots gefunden!`);
+                  
+                  const message = availableSlots
+                    .map(day => {
+                      const slotsInfo = day.slots
+                        .map(slot => `⏰ ${slot.time} (${slot.remaining} Tickets)`)
+                        .join('\n');
+                      return `📅 <b>${day.date}</b>:\n${slotsInfo}`;
+                    })
+                    .join('\n\n');
+                  
+                  const fullMessage = `🎮 <b>Freie Slots im Nintendo Museum (September 2024)!</b>\n\n${message}\n\n🔗 Jetzt buchen: https://museum-tickets.nintendo.com/en/calendar`;
+                  
+                  // Issue erstellen
                   await github.rest.issues.create({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
-                    title: '🎮 Neue Verfügbarkeit im Nintendo Museum entdeckt!',
-                    body: 'Es wurden Änderungen auf der Buchungsseite des Nintendo Museums erkannt. \n\nBitte überprüfen Sie die Verfügbarkeit unter: https://museum-tickets.nintendo.com/en/calendar'
+                    title: `🎮 ${availableSlots.length} Tag(e) mit freien Slots im September gefunden!`,
+                    body: fullMessage.replace(/<\/?b>/g, '**')
                   });
                   
-                  // Send Telegram notification
-                  await sendTelegramMessage('🎮 <b>Nintendo Museum Update!</b>\n\nEs wurden neue Änderungen auf der Buchungsseite erkannt.\nJetzt überprüfen: https://museum-tickets.nintendo.com/en/calendar');
-                  
-                  fs.writeFileSync('previous-state.txt', currentContent);
+                  // Telegram Nachricht senden
+                  await sendTelegramMessage(fullMessage);
+                } else {
+                  console.log('Keine freien Slots im September gefunden.');
                 }
+                
               } catch (error) {
-                console.error('Error checking museum slots:', error);
+                console.error('Fehler beim Überprüfen der Slots:', error);
+                const errorMessage = `❌ <b>Fehler beim Überprüfen der Museum-Slots:</b>\n\n${error.message}\n\nDer Bot läuft weiter und prüft beim nächsten Durchlauf erneut.`;
+                await sendTelegramMessage(errorMessage);
                 core.setFailed(error.message);
               }
             }
             
-            await checkMuseumSlots();
+            await checkSeptemberSlots();
