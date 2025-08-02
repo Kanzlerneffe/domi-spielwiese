@@ -65,25 +65,33 @@ jobs:
             function getDaysInMonth(year, month) {
               return new Date(year, month, 0).getDate();
             }
+
+            function getStatusEmoji(saleStatus, openStatus) {
+              if (openStatus === 2) return '🔒'; // Geschlossen
+              if (saleStatus === 1) return '✅'; // Verfügbar
+              if (saleStatus === 2) return '❌'; // Ausverkauft
+              return '❓'; // Unbekannter Status
+            }
+
+            function getStatusText(saleStatus, openStatus, holiday) {
+              if (openStatus === 2) return 'geschlossen';
+              if (saleStatus === 1) return 'Tickets verfügbar';
+              if (saleStatus === 2) return 'ausverkauft';
+              return 'Status unbekannt';
+            }
             
-            async function fetchCalendarData() {
+            async function fetchSeptemberData() {
               try {
-                const response = await axios.get('https://museum-tickets.nintendo.com/en/calendar', {
+                const response = await axios.get('https://museum-tickets.nintendo.com/api/calendar/2024-09', {
                   headers: {
-                    'Accept': 'text/html',
+                    'Accept': 'application/json',
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                   }
                 });
                 
-                const html = response.data;
-                const dataLayerMatch = html.match(/window\.dataLayer\s*=\s*(\[.*?\]);/s);
-                if (dataLayerMatch) {
-                  const dataLayer = JSON.parse(dataLayerMatch[1]);
-                  return dataLayer;
-                }
-                return null;
+                return response.data?.data?.calendar || {};
               } catch (error) {
-                console.error('Fehler beim Laden der Kalenderseite:', error);
+                console.error('Fehler beim API-Aufruf:', error.message);
                 throw error;
               }
             }
@@ -92,99 +100,62 @@ jobs:
               try {
                 console.log('Starte Überprüfung der September 2024 Slots...');
                 
-                const calendarData = await fetchCalendarData();
-                if (!calendarData) {
-                  throw new Error('Keine Kalenderdaten gefunden');
-                }
-                
-                // Suche nach September 2024 Daten im dataLayer
-                const septemberData = calendarData.find(item => 
-                  item.calendar && 
-                  item.calendar.dates && 
-                  Object.keys(item.calendar.dates).some(date => date.startsWith('2024-09'))
-                );
-                
-                // Erstelle ein Objekt mit allen Tagen des Septembers
-                const totalDays = getDaysInMonth(2024, 9);
-                const allSeptemberDays = {};
-                for (let day = 1; day <= totalDays; day++) {
-                  const date = `2024-09-${day.toString().padStart(2, '0')}`;
-                  allSeptemberDays[date] = {
-                    date: date,
-                    available: false,
-                    slots: []
-                  };
-                }
-                
-                // Fülle die verfügbaren Daten ein
-                if (septemberData && septemberData.calendar && septemberData.calendar.dates) {
-                  Object.entries(septemberData.calendar.dates)
-                    .filter(([date]) => date.startsWith('2024-09'))
-                    .forEach(([date, dateData]) => {
-                      const slots = dateData.timeslots || [];
-                      const availableSlots = slots.filter(slot => slot.available);
-                      
-                      allSeptemberDays[date] = {
-                        date: date,
-                        available: availableSlots.length > 0,
-                        slots: slots.map(slot => ({
-                          time: slot.time,
-                          available: slot.available,
-                          remaining: slot.remaining_tickets
-                        }))
-                      };
-                    });
-                }
+                const septemberData = await fetchSeptemberData();
+                console.log('September Daten erhalten:', Object.keys(septemberData).length, 'Tage');
                 
                 // Erstelle die Nachricht
                 let message = `🎮 <b>Nintendo Museum Status Update - September 2024</b>\n\n`;
                 
-                // Gruppiere nach Wochen für bessere Übersicht
+                // Gruppiere nach Wochen
                 const weeks = {};
-                Object.values(allSeptemberDays).forEach(day => {
-                  const date = new Date(day.date);
-                  const weekNum = Math.ceil(date.getDate() / 7);
+                Object.entries(septemberData).forEach(([date, dayData]) => {
+                  const weekNum = Math.ceil(new Date(date).getDate() / 7);
                   if (!weeks[weekNum]) weeks[weekNum] = [];
-                  weeks[weekNum].push(day);
+                  weeks[weekNum].push({
+                    date,
+                    ...dayData
+                  });
                 });
                 
                 // Füge jede Woche zur Nachricht hinzu
-                Object.entries(weeks).forEach(([weekNum, days]) => {
+                Object.entries(weeks).sort((a, b) => a[0] - b[0]).forEach(([weekNum, days]) => {
                   message += `\n<b>Woche ${weekNum}:</b>\n`;
-                  days.forEach(day => {
+                  days.sort((a, b) => a.date.localeCompare(b.date)).forEach(day => {
                     const date = new Date(day.date);
                     const dayName = date.toLocaleDateString('de-DE', { weekday: 'short' });
                     const dayNum = date.getDate();
                     
-                    if (day.slots.length === 0) {
-                      message += `📅 ${dayName} ${dayNum}: aktuell nicht verfügbar\n`;
-                    } else {
-                      message += `📅 ${dayName} ${dayNum}:\n`;
-                      day.slots.forEach(slot => {
-                        const status = slot.available 
-                          ? `✅ ${slot.remaining} Tickets verfügbar` 
-                          : '❌ ausgebucht';
-                        message += `⏰ ${slot.time}: ${status}\n`;
-                      });
+                    const emoji = getStatusEmoji(day.sale_status, day.open_status);
+                    const status = getStatusText(day.sale_status, day.open_status, day.holiday);
+                    
+                    let dayLine = `${emoji} ${dayName} ${dayNum}: ${status}`;
+                    if (day.holiday) {
+                      dayLine += ` (${day.holiday})`;
                     }
+                    message += dayLine + '\n';
                   });
                   message += '\n';
                 });
                 
+                // Füge Legende hinzu
+                message += `\n<b>Legende:</b>\n`;
+                message += `✅ = Tickets verfügbar\n`;
+                message += `❌ = Ausverkauft\n`;
+                message += `🔒 = Geschlossen\n`;
                 message += `\n🔗 <b>Buchungslink:</b> https://museum-tickets.nintendo.com/en/calendar`;
                 
                 // Sende die Nachricht
                 await sendTelegramMessage(message);
                 
-                // Wenn es verfügbare Slots gibt, erstelle auch ein Issue
-                const hasAvailableSlots = Object.values(allSeptemberDays)
-                  .some(day => day.slots.some(slot => slot.available));
+                // Wenn es verfügbare Tage gibt (sale_status = 1), erstelle ein Issue
+                const hasAvailableDays = Object.values(septemberData)
+                  .some(day => day.sale_status === 1 && day.open_status !== 2);
                 
-                if (hasAvailableSlots) {
+                if (hasAvailableDays) {
                   await github.rest.issues.create({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
-                    title: `🎮 Freie Slots im September 2024 gefunden!`,
+                    title: `🎮 Tickets für September 2024 verfügbar!`,
                     body: message.replace(/<\/?b>/g, '**')
                   });
                 }
