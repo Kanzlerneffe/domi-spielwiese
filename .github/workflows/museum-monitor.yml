@@ -1,9 +1,9 @@
 name: Museum Slot Monitor
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
+  # schedule:
+  #   - cron: '*/5 * * * *'
+  workflow_dispatch:  # Ermöglicht weiterhin manuelle Ausführung
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
