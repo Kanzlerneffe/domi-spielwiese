@@ -11,21 +11,24 @@ concurrency:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   monitor-nintendo-tickets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
-      - name: Install node-fetch
-        run: npm install node-fetch
-        
+          
+      - name: Install dependencies
+        run: |
+          npm install playwright node-fetch
+          npx playwright install chromium
+
       - name: Monitor Nintendo Museum Tickets
         uses: actions/github-script@v7
         env:
@@ -33,18 +36,16 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         with:
           script: |
-            console.log('🎮 Starting Nintendo Museum monitoring...');
+            const { chromium } = require('playwright');
             
             async function sendTelegramMessage(message) {
               try {
-                const fetch = (await import('node-fetch')).default;
-                console.log('📤 Sending message to chat ID:', process.env.TELEGRAM_CHAT_ID);
+                console.log('📤 Sending Telegram message...');
                 
+                const fetch = (await import('node-fetch')).default;
                 const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
                   method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json'
-                  },
+                  headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     chat_id: process.env.TELEGRAM_CHAT_ID,
                     text: message,
@@ -52,62 +53,164 @@ jobs:
                   })
                 });
                 
-                const responseText = await response.text();
-                console.log('Response Status:', response.status);
-                
                 if (response.ok) {
-                  const result = JSON.parse(responseText);
-                  if (result.ok) {
-                    console.log('✅ SUCCESS! Message sent successfully!');
-                    return true;
-                  } else {
-                    console.error('❌ Telegram API error:', result.description);
-                    return false;
-                  }
+                  console.log('✅ Telegram message sent successfully');
+                  return true;
                 } else {
-                  console.error('❌ Failed to send message:', responseText);
+                  console.error('❌ Telegram error:', await response.text());
                   return false;
                 }
               } catch (error) {
-                console.error('💥 Error sending message:', error.message);
+                console.error('💥 Telegram error:', error.message);
                 return false;
               }
             }
-            
-            try {
-              console.log('🔍 Checking Nintendo Museum status...');
-              
-              const fetch = (await import('node-fetch')).default;
-              const response = await fetch('https://museum-tickets.nintendo.com/en/calendar');
-              
+
+            async function checkNintendoMuseum() {
+              let browser;
               let statusMessage = '';
               
-              if (response.ok) {
+              try {
+                console.log('🎮 Starting Nintendo Museum check...');
+                
+                // Load the main page
+                const response = await fetch('https://museum-tickets.nintendo.com/en/calendar');
+                
+                if (!response.ok) {
+                  throw new Error(`Website not accessible: ${response.status}`);
+                }
+                
                 const html = await response.text();
-                console.log('📄 Page loaded successfully, size:', html.length);
+                console.log('📄 Page loaded, size:', html.length);
                 
-                const currentTime = new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'});
+                // Parse September calendar data using regex patterns
+                const septemberData = {};
                 
-                statusMessage = `🎮 Nintendo Museum Status Update\n\n📅 September 2025\n⚡ Live-Monitoring alle 10 Minuten\n\n🔍 Status-Check:\n✅ Website erreichbar\n📄 Seite geladen (${Math.round(html.length/1000)}KB)\n⏰ Geprüft: ${currentTime}\n\n🎯 Implementierung läuft...\n\n🔗 Zur Buchungsseite: https://museum-tickets.nintendo.com/en/calendar\n\n⚡ Nächste Prüfung: in 10 Minuten`;
+                // Extract all September dates from the HTML
+                // Look for patterns like: gridcell "September X, 2025"
+                const septemberPattern = /gridcell "September (\d{1,2}), 2025"[^>]*>([\s\S]*?)(?=gridcell|row|$)/g;
+                let match;
+                
+                while ((match = septemberPattern.exec(html)) !== null) {
+                  const day = match[1];
+                  const cellContent = match[2];
+                  
+                  // Determine status based on content
+                  let status = 'unknown';
+                  
+                  if (cellContent.includes('off') || cellContent.includes('closed')) {
+                    status = 'closed';
+                  } else if (cellContent.includes('cursor:pointer') || cellContent.includes('available')) {
+                    status = 'available';
+                  } else if (cellContent.includes('sold') || cellContent.includes('full')) {
+                    status = 'sold_out';
+                  } else {
+                    // If no clear indicators, assume sold out for now
+                    status = 'sold_out';
+                  }
+                  
+                  septemberData[day] = status;
+                }
+                
+                // Add known closed days (Mondays)
+                const closedDays = [2, 9, 16, 23, 30];
+                closedDays.forEach(day => {
+                  septemberData[day] = 'closed';
+                });
+                
+                // Build status report
+                let availableCount = 0;
+                let soldOutCount = 0;
+                let closedCount = 0;
+                let statusLines = [];
+                
+                for (let day = 1; day <= 30; day++) {
+                  const status = septemberData[day] || 'sold_out';
+                  const dayStr = day.toString().padStart(2, '0');
+                  
+                  if (status === 'available') {
+                    statusLines.push(`🎟️ ${dayStr}.09 = 🎟️ Verfügbar!`);
+                    availableCount++;
+                  } else if (status === 'closed') {
+                    statusLines.push(`🔒 ${dayStr}.09 = 🔒 Museum geschlossen`);
+                    closedCount++;
+                  } else {
+                    statusLines.push(`❌ ${dayStr}.09 = ❌ Ausverkauft`);
+                    soldOutCount++;
+                  }
+                }
+                
+                // Create message
+                statusMessage = `🎮 <b>Nintendo Museum Status Update</b>
+📅 <b>September 2025</b>
+⚡ Live-Monitoring alle 10 Minuten
 
-              } else {
-                const currentTime = new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'});
-                statusMessage = `❌ Nintendo Museum Monitor Fehler\n\n⏰ ${currentTime}\n🔧 Website nicht erreichbar (Status: ${response.status})\n🔄 Versuche es beim nächsten Check erneut...\n\n⚡ Nächste Prüfung: in 10 Minuten`;
+${statusLines.join('\n')}
+
+📊 <b>Zusammenfassung:</b>
+🎟️ Verfügbar: ${availableCount}
+❌ Ausverkauft: ${soldOutCount}
+🔒 Geschlossen: ${closedCount}
+
+🔗 <a href="https://museum-tickets.nintendo.com/en/calendar">Zur Buchungsseite</a>
+
+⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}
+⚡ Nächste Prüfung: in 10 Minuten`;
+
+                // Send immediate alert for available tickets
+                if (availableCount > 0) {
+                  const alertMessage = `🚨 <b>NINTENDO MUSEUM TICKETS VERFÜGBAR!</b> 🚨
+
+🎟️ <b>${availableCount} Tag(e) verfügbar!</b>
+
+${statusLines.filter(line => line.includes('🎟️')).join('\n')}
+
+⚡ <b>JETZT BUCHEN:</b>
+🔗 https://museum-tickets.nintendo.com/en/calendar
+
+⏰ Gefunden: ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}`;
+                  
+                  await sendTelegramMessage(alertMessage);
+                }
+
+              } catch (error) {
+                console.error('💥 Error during monitoring:', error.message);
+                statusMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>
+⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}
+🔧 ${error.message}
+
+🔄 System versucht es beim nächsten Check erneut...
+⚡ Nächste Prüfung: in 10 Minuten`;
+              } finally {
+                if (browser) {
+                  await browser.close();
+                  console.log('🔒 Browser closed');
+                }
               }
               
+              return statusMessage;
+            }
+
+            // Main execution
+            try {
+              console.log('🚀 Starting Nintendo Museum monitoring...');
+              const statusMessage = await checkNintendoMuseum();
+              
+              console.log('📤 Sending status update...');
               const success = await sendTelegramMessage(statusMessage);
               
               if (success) {
-                console.log('🎉 Monitor update sent successfully!');
+                console.log('✅ Monitoring completed successfully!');
               } else {
-                console.error('❌ Failed to send monitor update');
+                console.error('❌ Failed to send status update');
               }
               
             } catch (error) {
-              console.error('💥 Monitor error:', error.message);
+              console.error('💥 Fatal error:', error.message);
               
-              const currentTime = new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'});
-              const errorMessage = `❌ Nintendo Museum Monitor Fehler\n\n⏰ ${currentTime}\n🔧 ${error.message}\n🔄 System wird beim nächsten Check neu versuchen...`;
+              const errorMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>
+⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}
+🔧 Unerwarteter Fehler: ${error.message}`;
               
               await sendTelegramMessage(errorMessage);
             }
