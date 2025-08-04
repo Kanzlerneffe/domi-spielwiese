@@ -2,7 +2,7 @@ name: Nintendo Museum Ticket Monitor 🎮
 
 on:
   schedule:
-    - cron: '*/10 6-22 * * *'
+    - cron: '*/15 6-22 * * *'  # Weniger häufig = weniger verdächtig
   workflow_dispatch:
 
 concurrency:
@@ -18,6 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install Playwright
+        run: |
+          npm install playwright
+          npx playwright install chromium
+          
       - name: Monitor Nintendo Museum Tickets
         uses: actions/github-script@v7
         env:
@@ -26,6 +36,7 @@ jobs:
         with:
           script: |
             const https = require('https');
+            const { chromium } = require('playwright');
             
             // 📡 Telegram Message Function
             async function sendTelegramMessage(message) {
@@ -71,60 +82,139 @@ jobs:
               });
             }
             
-            // 🎮 Nintendo Museum API Check
-            async function checkNintendoAPI() {
-              return new Promise((resolve, reject) => {
-                const options = {
-                  hostname: 'museum-tickets.nintendo.com',
-                  port: 443,
-                  path: '/en/api/calendar?target_year=2025&target_month=9',
-                  method: 'GET',
-                  headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Accept': 'application/json',
-                    'Referer': 'https://museum-tickets.nintendo.com/en/calendar'
-                  }
-                };
+            // 🎮 Nintendo Museum Browser Check (Playwright)
+            async function checkNintendoWithBrowser() {
+              let browser = null;
+              try {
+                console.log('🚀 Launching browser...');
+                browser = await chromium.launch({ headless: true });
+                const page = await browser.newPage();
                 
-                const req = https.request(options, (res) => {
-                  let data = '';
-                  res.on('data', (chunk) => data += chunk);
-                  res.on('end', () => {
-                    try {
-                      const jsonData = JSON.parse(data);
-                      resolve(jsonData);
-                    } catch (error) {
-                      reject(new Error(`JSON Parse Error: ${error.message}`));
+                // 🤖 Stealth Mode - Look like real user
+                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+                await page.setExtraHTTPHeaders({
+                  'Accept-Language': 'en-US,en;q=0.9',
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                });
+                
+                console.log('📡 Navigating to Nintendo Museum...');
+                await page.goto('https://museum-tickets.nintendo.com/en/calendar', { 
+                  waitUntil: 'networkidle',
+                  timeout: 30000 
+                });
+                
+                // ⏳ Wait for calendar to load
+                console.log('⏳ Waiting for calendar...');
+                await page.waitForTimeout(3000);
+                
+                // 🔍 Extract calendar data from page
+                const calendarData = await page.evaluate(() => {
+                  // Try to find calendar data in various locations
+                  const results = {
+                    found: false,
+                    method: null,
+                    data: null,
+                    apiData: null
+                  };
+                  
+                  // Method 1: Check for window.__NUXT__ or similar
+                  if (window.__NUXT__ && window.__NUXT__.data && window.__NUXT__.data[0]) {
+                    results.found = true;
+                    results.method = 'NUXT_DATA';
+                    results.data = window.__NUXT__.data[0];
+                    return results;
+                  }
+                  
+                  // Method 2: Try to intercept fetch calls or check for cached data
+                  const scripts = document.querySelectorAll('script');
+                  for (let script of scripts) {
+                    if (script.textContent && script.textContent.includes('calendar') && script.textContent.includes('2025-09')) {
+                      try {
+                        // Extract JSON data from script
+                        const match = script.textContent.match(/calendar["\s]*:[^}]+}/);
+                        if (match) {
+                          results.found = true;
+                          results.method = 'SCRIPT_EXTRACT';
+                          results.data = match[0];
+                          return results;
+                        }
+                      } catch (e) {
+                        console.log('Script parsing failed:', e.message);
+                      }
+                    }
+                  }
+                  
+                  // Method 3: DOM analysis (fallback)
+                  const septemberDates = {};
+                  const cells = document.querySelectorAll('[role="gridcell"]');
+                  
+                  cells.forEach(cell => {
+                    const ariaLabel = cell.getAttribute('aria-label') || '';
+                    if (ariaLabel.includes('September') && ariaLabel.includes('2025')) {
+                      const dayMatch = ariaLabel.match(/September (\d+), 2025/);
+                      if (dayMatch) {
+                        const day = dayMatch[1].padStart(2, '0');
+                        const dateKey = `2025-09-${day}`;
+                        
+                        // Analyze visual state
+                        const styles = window.getComputedStyle(cell);
+                        const cursor = styles.cursor;
+                        const disabled = cell.hasAttribute('disabled') || cell.getAttribute('aria-disabled') === 'true';
+                        const classes = cell.className;
+                        
+                        septemberDates[dateKey] = {
+                          day: day,
+                          cursor: cursor,
+                          disabled: disabled,
+                          classes: classes,
+                          ariaLabel: ariaLabel,
+                          // Estimate status based on DOM
+                          estimated_sale_status: cursor === 'pointer' && !disabled ? 1 : 2,
+                          estimated_open_status: disabled ? 2 : 1
+                        };
+                      }
                     }
                   });
+                  
+                  if (Object.keys(septemberDates).length > 0) {
+                    results.found = true;
+                    results.method = 'DOM_ANALYSIS';
+                    results.data = { calendar: septemberDates };
+                  }
+                  
+                  return results;
                 });
                 
-                req.on('error', (error) => {
-                  reject(new Error(`Request Error: ${error.message}`));
-                });
+                console.log(`📊 Calendar data extraction: ${calendarData.found ? 'SUCCESS' : 'FAILED'}`);
+                console.log(`🔧 Method used: ${calendarData.method}`);
                 
-                req.setTimeout(10000, () => {
-                  req.destroy();
-                  reject(new Error('Request timeout'));
-                });
+                if (!calendarData.found) {
+                  throw new Error('No calendar data found on page');
+                }
                 
-                req.end();
-              });
+                return calendarData.data;
+                
+              } finally {
+                if (browser) {
+                  await browser.close();
+                  console.log('🔒 Browser closed');
+                }
+              }
             }
             
             // 🚀 Main Execution
             try {
-              console.log('🎮 Starting Nintendo Museum API monitoring...');
+              console.log('🎮 Starting Nintendo Museum Browser monitoring...');
               
-              const apiData = await checkNintendoAPI();
-              console.log('📡 API Response received');
+              const calendarData = await checkNintendoWithBrowser();
+              console.log('📡 Calendar data retrieved');
               
-              if (!apiData.data || !apiData.data.calendar) {
-                throw new Error('Invalid API response structure');
+              if (!calendarData || !calendarData.calendar) {
+                throw new Error('Invalid calendar data structure');
               }
               
               // 📅 September 2025 Analysis
-              const calendar = apiData.data.calendar;
+              const calendar = calendarData.calendar;
               const availableDates = [];
               const soldOutDates = [];
               const closedDates = [];
@@ -134,24 +224,33 @@ jobs:
                 if (!dateStr.startsWith('2025-09-')) continue;
                 
                 const day = dateStr.split('-')[2];
+                
+                // Handle both API format and DOM format
+                let isAvailable = false;
+                let isClosed = false;
+                
+                if (dayData.sale_status !== undefined) {
+                  // API format (from your analysis)
+                  isAvailable = dayData.sale_status === 1 && dayData.open_status === 1;
+                  isClosed = dayData.open_status === 2;
+                } else {
+                  // DOM format (estimated)
+                  isAvailable = dayData.estimated_sale_status === 1 && dayData.estimated_open_status === 1;
+                  isClosed = dayData.estimated_open_status === 2;
+                }
+                
                 const status = {
                   date: dateStr,
                   day: day,
-                  sale_status: dayData.sale_status,
-                  open_status: dayData.open_status,
-                  holiday: dayData.holiday
+                  data: dayData
                 };
                 
-                // 🎯 Classification based on your analysis
-                if (dayData.sale_status === 1 && dayData.open_status === 1) {
-                  // AVAILABLE TICKETS! 🎟️
+                if (isAvailable) {
                   availableDates.push(status);
-                } else if (dayData.sale_status === 2 && dayData.open_status === 1) {
-                  // Sold out but museum open ❌
-                  soldOutDates.push(status);
-                } else if (dayData.open_status === 2) {
-                  // Museum closed 🔒  
+                } else if (isClosed) {
                   closedDates.push(status);
+                } else {
+                  soldOutDates.push(status);
                 }
               }
               
@@ -180,15 +279,20 @@ jobs:
               message += `🎯 <b>Deine Ziel-Termine:</b>\n`;
               
               for (const targetDay of targetDates) {
-                const dayData = calendar[`2025-09-${targetDay}`];
-                if (dayData) {
-                  if (dayData.sale_status === 1 && dayData.open_status === 1) {
+                const targetDate = availableDates.find(d => d.day === targetDay) ||
+                                  soldOutDates.find(d => d.day === targetDay) ||
+                                  closedDates.find(d => d.day === targetDay);
+                
+                if (targetDate) {
+                  if (availableDates.includes(targetDate)) {
                     message += `🎟️ ${targetDay}.09: <b>VERFÜGBAR!</b>\n`;
-                  } else if (dayData.sale_status === 2) {
-                    message += `❌ ${targetDay}.09: Ausverkauft\n`;
-                  } else {
+                  } else if (closedDates.includes(targetDate)) {
                     message += `🔒 ${targetDay}.09: Geschlossen\n`;
+                  } else {
+                    message += `❌ ${targetDay}.09: Ausverkauft\n`;
                   }
+                } else {
+                  message += `❓ ${targetDay}.09: Daten nicht gefunden\n`;
                 }
               }
               
@@ -201,7 +305,7 @@ jobs:
               console.error('💥 Monitoring error:', error.message);
               
               // 🚨 Send error notification
-              const errorMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>\n⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}\n\n🔧 ${error.message}`;
+              const errorMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>\n⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}\n\n🔧 ${error.message}\n\n💡 System versucht Browser-Methode...`;
               
               try {
                 await sendTelegramMessage(errorMessage);
