@@ -35,7 +35,6 @@ jobs:
           script: |
             console.log('🎮 Starting Nintendo Museum monitoring...');
             
-            // Verwende die EXAKT GLEICHE Telegram-Methode wie im Test!
             async function sendTelegramMessage(message) {
               try {
                 const fetch = (await import('node-fetch')).default;
@@ -55,7 +54,6 @@ jobs:
                 
                 const responseText = await response.text();
                 console.log('Response Status:', response.status);
-                console.log('Response Body:', responseText);
                 
                 if (response.ok) {
                   const result = JSON.parse(responseText);
@@ -76,7 +74,6 @@ jobs:
               }
             }
             
-            // Nintendo Museum Check (SUPER EINFACH erstmal)
             try {
               console.log('🔍 Checking Nintendo Museum status...');
               
@@ -89,38 +86,15 @@ jobs:
                 const html = await response.text();
                 console.log('📄 Page loaded successfully, size:', html.length);
                 
-                // Einfache Check-Logik für jetzt
                 const currentTime = new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'});
                 
-                statusMessage = `🎮 <b>Nintendo Museum Status Update</b>
-                
-📅 <b>September 2025</b>
-⚡ Live-Monitoring alle 10 Minuten
-
-🔍 <b>Status-Check:</b>
-✅ Website erreichbar
-📄 Seite geladen (${Math.round(html.length/1000)}KB)
-⏰ Geprüft: ${currentTime}
-
-🎯 <b>Nächste Funktionen:</b>
-• Verfügbarkeits-Erkennung wird implementiert
-• Basierend auf deiner API-Analyse: sale_status: 1 = verfügbar
-
-🔗 <a href="https://museum-tickets.nintendo.com/en/calendar">Zur Buchungsseite</a>
-
-⚡ Nächste Prüfung: in 10 Minuten`;
+                statusMessage = `🎮 Nintendo Museum Status Update\n\n📅 September 2025\n⚡ Live-Monitoring alle 10 Minuten\n\n🔍 Status-Check:\n✅ Website erreichbar\n📄 Seite geladen (${Math.round(html.length/1000)}KB)\n⏰ Geprüft: ${currentTime}\n\n🎯 Implementierung läuft...\n\n🔗 Zur Buchungsseite: https://museum-tickets.nintendo.com/en/calendar\n\n⚡ Nächste Prüfung: in 10 Minuten`;
 
               } else {
-                statusMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>
-                
-⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}
-🔧 Website nicht erreichbar (Status: ${response.status})
-🔄 Versuche es beim nächsten Check erneut...
-
-⚡ Nächste Prüfung: in 10 Minuten`;
+                const currentTime = new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'});
+                statusMessage = `❌ Nintendo Museum Monitor Fehler\n\n⏰ ${currentTime}\n🔧 Website nicht erreichbar (Status: ${response.status})\n🔄 Versuche es beim nächsten Check erneut...\n\n⚡ Nächste Prüfung: in 10 Minuten`;
               }
               
-              // Nachricht senden mit bewährter Methode
               const success = await sendTelegramMessage(statusMessage);
               
               if (success) {
@@ -132,12 +106,8 @@ jobs:
             } catch (error) {
               console.error('💥 Monitor error:', error.message);
               
-              // Fehler-Nachricht senden
-              const errorMessage = `❌ <b>Nintendo Museum Monitor Fehler</b>
-              
-⏰ ${new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'})}
-🔧 ${error.message}
-🔄 System wird beim nächsten Check neu versuchen...`;
+              const currentTime = new Date().toLocaleString('de-DE', {timeZone: 'Europe/Berlin'});
+              const errorMessage = `❌ Nintendo Museum Monitor Fehler\n\n⏰ ${currentTime}\n🔧 ${error.message}\n🔄 System wird beim nächsten Check neu versuchen...`;
               
               await sendTelegramMessage(errorMessage);
             }
